@@ -7,13 +7,17 @@ int j = 0;
 int r = 0;
 
 volatile int i, n, sampleCount;
-volatile int sample = 0;
 volatile int sampling_active = 0;
 volatile float avg;
 volatile float unrounded_avg = 0;
 volatile float ADC[9];
 int temp_in[] = { 0x00, 0x00 };
 int mode, mode_b;
+
+
+int mode_count = 0;
+int rtc_sec = 0;
+int last_rtc_sec = 0;
 
 unsigned int lm92_pointer_set = 0;
 int lm92_temp = 0b0000000000000; // 12-bit + sign bit (13 bits)
@@ -22,14 +26,19 @@ float lm92_celcius;
 unsigned int ADC_value;
 
 volatile int sensor_ms_count = 0;
-volatile int ms_thresh, ms_count, ms_flag;
+volatile int ms_count;
 
-volatile unsigned char transmit_key;
-
+char led_packet[] = { 0x80 };
+int send_led_packet_flag = 0;
+volatile int send_lcd_packet_flag = 0;
+volatile int query_rtc_flag = 0;
+volatile int query_lm92_flag = 0;
 char lm92_write_packet[] = { 0x00 };
-char rtc_packet[] = {0x0A, 0x0A, 0x0A};         // 8 byte packet for transmission
-char packet[] = {0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A};         // 8 byte packet for transmission
-//char packet[] = {[P1], [P2], [P3], [A1], [A2], [A3], [T], [T], [T], [M], [N]};         // 11 byte packet for transmission
+char rtc_packet[] = {0x0A};         // 8 byte packet for transmission
+
+//char packet[] = {[P1], [P2], [P3], [A1], [A2], [A3], [T], [T], [T], [M], [N]};
+char packet[] = {0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A};         // 11 byte packet for transmission
+char plant_op_mode = 0x00; // 0x80, 0x40, 0x20, 0x10, 0x00
 
 volatile unsigned char col_holding, row_holding;
 volatile unsigned char pressed_key;
@@ -116,13 +125,21 @@ void initTimerB2compare() {
 
 void configureAdc() {
 
+//    SYSCFG2 |= 0x0001 << ADCINCH_8;         // Configure ADC A8 pin (P5.0)
+//    ADCCTL0 &= ~ADCENC;                     // Disable ADC
+//    ADCCTL0 |= ADCSHT_2 | ADCON;            // ADC ON, 16 clocks
+//    ADCCTL1 = ADCSHP;                       // Sampling timer
+//    ADCCTL2 = ADCRES;                       // 10 bit resolution
+//    ADCMCTL0 = ADCINCH_8 | ADCSREF_0;       // ADC A8 input select, Vref of AVCC
+//    ADCIE = ADCIE0;                         // Enable ADC
+
     SYSCFG2 |= 0x0001 << ADCINCH_8;         // Configure ADC A8 pin (P5.0)
     ADCCTL0 &= ~ADCENC;                     // Disable ADC
     ADCCTL0 |= ADCSHT_2 | ADCON;            // ADC ON, 16 clocks
-    ADCCTL1 = ADCSHP;                       // Sampling timer
-    ADCCTL2 = ADCRES;                       // 10 bit resolution
-    ADCMCTL0 = ADCINCH_8 | ADCSREF_0;       // ADC A8 input select, Vref of AVCC
-    ADCIE = ADCIE0;                         // Enable ADC
+    ADCCTL1 |= ADCSHP;                       // Sampling timer
+    ADCCTL2 |= ADCRES;                       // 10 bit resolution
+    ADCMCTL0 |= ADCINCH_8 | ADCSREF_0;       // ADC A8 input select, Vref of AVCC
+    ADCIE |= ADCIE0;
 
 }
 
@@ -245,53 +262,72 @@ void loadPacket() {
 
     int digit, j;
 
-   // Place each digit of LM92 temperature into first three places of packet
+   // Place each digit of LM92 temperature into last four places of packet
    float num = lm92_celcius;
-//   int h = ((int)num % 1000)/100;
    int t = ((int)num % 100)/10;
    int o = ((int)num % 10)/1;
    int th = ((int)(num * 10) % 10);
 
-   for(i = 0; i < 3; i++) {
-       if(i == 0) {
+   for(i = 3; i < 6; i++) {
+       if(i == 3) {
            digit = t;
-       } else if(i == 1) {
+       } else if(i == 4) {
            digit = o;
-       } else if(i == 2) {
+       } else if(i == 5) {
            digit = th;
        }
        packet[i] = getCharKey(digit);
    }
 
     // Round Celsius average
-    avg = round(unrounded_avg*10);
-    avg = fabs(avg);
+    avg = round(unrounded_avg*10)/10;
 
-    // Place each digit of Celsius temperature (including decimal) into last four places of packet
-    for(i = 3; i < 7; i++) {
-        if(i == 3) {
-            digit = avg / 100;
-            avg = avg - digit*100;
-        } else if(i == 4) {
-            digit = avg / 10;
-            avg = avg - digit*10;
-        } else if(i == 5) {
-            digit = -1;
-        } else if(i == 6) {
-            digit = avg;
-            avg = 0;
+    t = ((int)avg % 100)/10;
+    o = ((int)avg % 10)/1;
+    th = ((int)(avg * 10) % 10);
+
+    // Place each digit of Celsius temperature (including decimal) into first three places of packet
+    for(i = 0; i < 3; i++) {
+        if(i == 0) {
+            digit = t;
+        } else if(i == 1) {
+            digit = o;
+        } else if(i == 2) {
+            digit = th;
         }
         packet[i] = getCharKey(digit);
     }
 
-    packet[7] = n;
+    th = ((int)mode_count % 1000)/100;
+    t = ((int)mode_count % 100)/10;
+    o = ((int)mode_count % 10)/1;
 
+    // Time packet bytes
+    for(i = 6; i < 9; i++) {
+        if(i == 6) {
+            digit = th;
+        } else if(i == 7) {
+            digit = t;
+        } else if(i == 8) {
+            digit = o;
+        }
+        packet[i] = getCharKey(digit);
+    }
+
+    packet[9] = plant_op_mode; // [M]
+    packet[10] = n; // [N]
 
 }
 
 void getAverage() {
+
+    avg = 0;                             // Reset moving average
+
     //Convert DN (ADCMEM0) to voltage to temperature (Celsius)
-    ADC[0] = -1481.96 + sqrt( 2.1962*pow(10, 6) + (1.8639 - (ADC_value/(pow(2, 10))*3.3)) / (3.88*pow(10, -6))  );
+    float voltage = (3.3*ADC_value)/1023;
+    float tcel = (1.8641 - voltage) / 0.01171;
+    ADC[0] = tcel;
+    //ADC[0] = -1481.96 + sqrt( 2.1962*pow(10, 6) + (1.8639 - (voltage)) / (3.88*pow(10, -6))  );
 
     // Transmit temperature average if enough samples have been recorded for desired window size
     if(sampleCount > n - 1  && n > 0) {
@@ -301,11 +337,10 @@ void getAverage() {
             avg = avg + ADC[i];
         }
         unrounded_avg = avg / n;
-        loadPacket();
+        // loadPacket();
     }
 
-   avg = 0;                             // Reset moving average
-   sample = 0;                           // Reset sample indicator
+
 }
 
 void queryRTC(){
@@ -327,6 +362,33 @@ void queryRTC(){
 
 }
 
+void send_led_packet(){
+    led_packet[0] = plant_op_mode;
+
+    UCB1I2CSA = 0x0058;                 // Set slave address
+    mode = 4;
+    UCB1CTLW0 |= UCTR;
+    UCB1TBCNT = 1;
+    UCB1CTLW0 |= UCTXSTT;           // Generate START condition
+    int timeout_cnt = 0;
+    int tcnt = 0;
+    int timeout = 0;
+    while((UCB1IFG & UCSTPIFG)==0){
+        // wait for STOP
+        timeout_cnt++;
+        if(timeout_cnt == 2500){
+            tcnt++;
+            if(tcnt == 20){
+                UCB1IFG |= UCSTPIFG;
+                return;
+            }
+
+        }
+    };
+    UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
+
+}
+
 void queryLM92(){
 
     UCB1I2CSA = 0x0048;                 // Set slave address
@@ -335,7 +397,22 @@ void queryLM92(){
         UCB1CTLW0 |= UCTR;
         UCB1TBCNT = 1;
         UCB1CTLW0 |= UCTXSTT;           // Generate START condition
-        while((UCB1IFG & UCSTPIFG)==0); // wait for STOP
+        int timeout_cnt = 0;
+        int tcnt = 0;
+        int timeout = 0;
+        while((UCB1IFG & UCSTPIFG)==0){
+            // wait for STOP
+            timeout_cnt++;
+            if(timeout_cnt == 2500){
+                tcnt++;
+                if(tcnt == 10){
+                    if(UCB1IFG & UCCLTOIFG)
+                    UCB1IFG |= UCSTPIFG;
+                    return;
+                }
+
+            }
+        };
         UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
 
         lm92_pointer_set = 1;
@@ -345,8 +422,22 @@ void queryLM92(){
     UCB1CTLW0 &= ~UCTR;
     UCB1TBCNT = 2;
     UCB1CTLW0 |= UCTXSTT;           // Generate START condition
-    while((UCB1IFG & UCSTPIFG)==0); // wait for STOP
-//    UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
+    int timeout_cnt = 0;
+    int tcnt = 0;
+    int timeout = 0;
+    while((UCB1IFG & UCSTPIFG)==0){
+        // wait for STOP
+        timeout_cnt++;
+        if(timeout_cnt == 2500){
+            tcnt++;
+            if(tcnt == 20){
+                UCB1IFG |= UCSTPIFG;
+                return;
+            }
+
+        }
+    };
+    UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
 }
 
 void parseLM92Temp(){
@@ -386,7 +477,21 @@ void sendLCDPacket(){
         UCB1CTLW0 |= UCTR;
         UCB1TBCNT = sizeof(packet);
         UCB1CTLW0 |= UCTXSTT;           // Generate START condition
-        while((UCB1IFG & UCSTPIFG)==0); // wait for STOP
+        int timeout_cnt = 0;
+        int tcnt = 0;
+        int timeout = 0;
+        while((UCB1IFG & UCSTPIFG)==0){
+            // wait for STOP
+            timeout_cnt++;
+            if(timeout_cnt == 2500){
+                tcnt++;
+                if(tcnt == 20){
+                    UCB1IFG |= UCSTPIFG;
+                    return;
+                }
+
+            }
+        };
         UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
     }
 }
@@ -395,8 +500,8 @@ int main(void) {
 
     WDTCTL = WDTPW | WDTHOLD;           // Stop watchdog timer
 
-    P6DIR |= (BIT4 | BIT5 | BIT6);     // Set P6.6 as OUTPUT
-    P6OUT &= ~(BIT4 | BIT5 | BIT6);    // Clear P6.6
+    P6DIR |= (BIT2 | BIT3 | BIT4 | BIT5 | BIT6);     // Set P6.6 as OUTPUT
+    P6OUT &= ~(BIT2 | BIT3 | BIT4 | BIT5 | BIT6);    // Clear P6.6
 
     initI2C_master();                   // Intialize master for I2C transmission
     initRTC_master();
@@ -418,21 +523,33 @@ int main(void) {
     int i,k;
     while(1){
 
-        queryRTC();
+        if(send_led_packet_flag == 1){
+            send_led_packet();
+            send_led_packet_flag = 0;
+        }
 
-        queryLM92();
-        parseLM92Temp();
-        lm92_celcius = lm92_temp * 0.0625;
+        if(query_rtc_flag == 1){
+            P6OUT ^= BIT3;
+            queryRTC(); // query RTC
+            query_rtc_flag = 0;
+        }
 
-        sendLCDPacket();
+        if(query_lm92_flag == 1){
+            P6OUT ^= BIT2;
+            queryLM92(); // query LM92 (plant temp)
+            parseLM92Temp();
+            lm92_celcius = lm92_temp * 0.0625;
+            query_lm92_flag = 0;
+        }
 
-        while((UCB1IFG & UCSTPIFG)==0); // wait for STOP
-//        UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
+        if(send_lcd_packet_flag == 1){
+            loadPacket();
+            sendLCDPacket();
+            send_lcd_packet_flag = 0;
+        }
 
-//        while((UCB1IFG & UCSTPIFG)==0); // wait for STOP
-//        UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
 
-        for(i=0;i<1000;i++){
+        for(i=0;i<200;i++){
             for(k=0;k<100;k++){
                 delay1000();
             }
@@ -474,7 +591,7 @@ void keyPressedAction(char pressed_key) {
     if(is_unlocked(pressed_key) == 1){
         if(pressed_key == 0x11 || pressed_key == 0x17) {        // If #/*, transmit to LCD slave
             packet[0] = pressed_key;                            // Place #/* first in packet
-            for(i = 1; i < 7; i++) {
+            for(i = 1; i < sizeof(packet); i++) {
                 packet[i] = 0x0A;                               // Fill the rest of packet with dummy values
             }
         } else {
@@ -488,6 +605,9 @@ void keyPressedAction(char pressed_key) {
                 case 0x81:
                     n = 3;
                     break;
+                case 0x80:
+                    plant_op_mode = pressed_key;
+                    break;
                 case 0x47:
                     n = 4;
                     break;
@@ -496,6 +616,9 @@ void keyPressedAction(char pressed_key) {
                     break;
                 case 0x41:
                     n = 6;
+                    break;
+                case 0x40:
+                    plant_op_mode = pressed_key;
                     break;
                 case 0x27:
                     n = 7;
@@ -506,6 +629,12 @@ void keyPressedAction(char pressed_key) {
                 case 0x21:
                     n = 9;
                     break;
+                case 0x20:
+                    plant_op_mode = pressed_key;
+                    break;
+                case 0x10:
+                    plant_op_mode = pressed_key;
+                    break;
                 case 0x13:
                     n = 0;
                     for(i = 0; i < 7; i++) {
@@ -513,7 +642,6 @@ void keyPressedAction(char pressed_key) {
                     }
                     break;
                 default:
-                    n = 0;
                     break;
             }
         }
@@ -546,8 +674,12 @@ __interrupt void ISR_TB0_CCR0(void){
 
     P6OUT |= BIT4; // green led on
 
-    keyPressedAction(pressed_key);
+    if(pressed_key == 0x80 || pressed_key == 0x40 || pressed_key == 0x20 || pressed_key == 0x10){
+         send_led_packet_flag = 1;
+         mode_count = 0;
+     }
 
+    keyPressedAction(pressed_key);
 
     UCB1IE |= UCTXIE0;      // Enable I2C B0 TX interrupt
     UCB1CTLW0 |= UCTXSTT;           // Generate START condition
@@ -556,10 +688,16 @@ __interrupt void ISR_TB0_CCR0(void){
 
 #pragma vector = TIMER1_B0_VECTOR
 __interrupt void ISR_TB1_CCR0(void) {
-    sample = 1;                                             // Set sample indicator
-
     sensor_ms_count++;
-    if(sensor_ms_count == 500){
+    if((sensor_ms_count == 250)||(sensor_ms_count == 750)){
+        if(sensor_ms_count == 250){
+            query_rtc_flag = 1;
+        }
+        query_lm92_flag = 1;
+
+    }
+    if((sensor_ms_count == 500)||(sensor_ms_count == 1000)){
+
         P6OUT ^= BIT6;    // toggle P6.6
         sampleCount++;
         sampling_active = 1;
@@ -567,8 +705,15 @@ __interrupt void ISR_TB1_CCR0(void) {
         getAverage();
         P6OUT ^= BIT6;    // toggle P6.6
 
-        sensor_ms_count = 0;
         sampling_active = 0;
+        if(sensor_ms_count == 1000){
+            sensor_ms_count = 0;
+        }
+    }
+    if(sensor_ms_count == 900){
+        if(plant_op_mode != 0){
+            send_lcd_packet_flag = 1;
+        }
     }
 
     TB1CCTL0 &= ~CCIFG;                                     // Clear flag
@@ -617,6 +762,8 @@ __interrupt void EUSCI_B1_TX_ISR(void){                     // Fill TX buffer wi
         case 0x18:      // ID 18: TXIFG0
             if(mode == 1){
                 UCB1TXBUF = lm92_write_packet[0];
+            } else if(mode == 4){
+                UCB1TXBUF = led_packet[0];
             } else if(mode == 3){
                 if (j == (sizeof(packet)-1)){
                     UCB1TXBUF = packet[j];
@@ -628,6 +775,13 @@ __interrupt void EUSCI_B1_TX_ISR(void){                     // Fill TX buffer wi
                 }
             }
             break;
+        case UCCLTOIFG: // clock low timeout
+                UCB1CTLW0 = UCSWRST;                        // Put I2C into reset
+//                UCB0IE &= ~(UCTXIE);                        // Disable TX interrupt
+//                UCB0IE |= UCRXIE;                           // Enable RX interrupt
+                UCB1CTLW0 &= ~UCSWRST;                      // Take I2C out of reset
+                break;
+
         default:
             break;
     }
@@ -644,6 +798,16 @@ __interrupt void EUSCI_B0_TX_ISR(void){
                 if (r == (sizeof(rtc_packet)-1)){
                     rtc_packet[r] = UCB0RXBUF;
                     r = 0;
+
+                    rtc_sec = rtc_packet[0];
+                    if(rtc_sec != last_rtc_sec){
+                        mode_count++;
+                        last_rtc_sec = rtc_sec;
+                        if(mode_count == 300){
+                            mode_count = 0;
+                            plant_op_mode = 0x10;
+                        }
+                    }
                 } else {
                     rtc_packet[r] = UCB0RXBUF;
                     r++;
