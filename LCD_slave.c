@@ -360,23 +360,25 @@ init();
 
                   // renderPkt(tpkt, 0, 10); testing
 
-                shiftCurFwd(4);
-                sendByte(getCharCode(tpkt[10]), 1);    // Display n value
-                shiftCurFwd(5);
-                renderPkt(tpkt, 0, 1);              // Display ambient temperature
-                sendByte(getCharCode(0x12), 1);     // .
-                sendByte(getCharCode(tpkt[2]), 1);  // tenths place
+                if((pkt[9] == 0x80) || (pkt[9] == 0x40) || (pkt[9] == 0x20) || (pkt[9] == 0x10) || (pkt[9] == 0x00)) {
+                    shiftCurFwd(4);
+                    sendByte(getCharCode(tpkt[10]), 1);    // Display n value
+                    shiftCurFwd(5);
+                    renderPkt(tpkt, 0, 1);              // Display ambient temperature
+                    sendByte(getCharCode(0x12), 1);     // .
+                    sendByte(getCharCode(tpkt[2]), 1);  // tenths place
 
-                setCursorSecondRow();
-                sendByte(getCharCode(tpkt[9]), 1);    // Display M
-                shiftCurFwd(1);
-                renderPkt(tpkt, 6, 8);                     // Display time
-                shiftCurFwd(5);
+                    setCursorSecondRow();
+                    sendByte(getCharCode(tpkt[9]), 1);    // Display M
+                    shiftCurFwd(1);
+                    renderPkt(tpkt, 6, 8);                     // Display time
+                    shiftCurFwd(5);
 
-                renderPkt(tpkt, 3, 4);              // Display plant temperature
-                sendByte(getCharCode(0x12), 1);     // .
-                sendByte(getCharCode(tpkt[5]), 1);  // tenths place
-                returnHome();
+                    renderPkt(tpkt, 3, 4);              // Display plant temperature
+                    sendByte(getCharCode(0x12), 1);     // .
+                    sendByte(getCharCode(tpkt[5]), 1);  // tenths place
+                    returnHome();
+                }
 
                 action_select = 0;          // End action
 
