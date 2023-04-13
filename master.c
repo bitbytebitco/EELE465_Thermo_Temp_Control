@@ -527,12 +527,39 @@ void sendLCDPacket(){
     }
 }
 
+void setHot(){
+    P5OUT &= ~BIT2;  // unset cool
+    P5OUT |= BIT1;  // set hot
+}
+void setCool(){
+    P5OUT |= BIT2;  // set cool
+    P5OUT &= ~BIT1;  // unset hot
+}
+void setOff(){
+    P5OUT &= ~BIT2;  // unset cool
+    P5OUT &= ~BIT1;  // unset hot
+}
+void updateTempControls(){
+    if(plant_op_mode == 0x80){
+        setHot();
+    } else if(plant_op_mode == 0x40){
+        setCool();
+    } else if(plant_op_mode == 0x20){
+        // match ambient
+    } else if(plant_op_mode == 0x10){
+        setOff();
+    }
+}
+
 int main(void) {
 
     WDTCTL = WDTPW | WDTHOLD;           // Stop watchdog timer
 
     P6DIR |= (BIT2 | BIT3 | BIT4 | BIT5 | BIT6);     // Set P6.6 as OUTPUT
     P6OUT &= ~(BIT2 | BIT3 | BIT4 | BIT5 | BIT6);    // Clear P6.6
+
+    P5DIR |= (BIT2 | BIT1); // hot/cold outputs
+    P5OUT |= ~(BIT2 | BIT1);
 
     initI2C_master();                   // Intialize master for I2C transmission
     initRTC_master();
@@ -553,17 +580,20 @@ int main(void) {
     int i,k,l;
     while(1){
 
+        // LED Bar
         if(send_led_packet_flag == 1){
             send_led_packet();
             send_led_packet_flag = 0;
         }
 
+        // RTC
         if(query_rtc_flag == 1){
             P6OUT ^= BIT3;
             queryRTC(); // query RTC
             query_rtc_flag = 0;
         }
 
+        // LM92
         if(query_lm92_flag == 1){
             P6OUT ^= BIT2;
             queryLM92(); // query LM92 (plant temp)
@@ -571,10 +601,13 @@ int main(void) {
 
             loadLM92temp();
 
-
             query_lm92_flag = 0;
         }
 
+        // Output control
+        updateTempControls();
+
+        // 16x2 LCD output
         if(send_lcd_packet_flag == 1){
             loadPacket();
             sendLCDPacket();
@@ -582,8 +615,8 @@ int main(void) {
         }
 
 
-        for(i=0;i<200;i++){
-            for(k=0;k<100;k++){
+        for(i=0;i<100;i++){
+            for(k=0;k<50;k++){
                 delay1000();
             }
         }
