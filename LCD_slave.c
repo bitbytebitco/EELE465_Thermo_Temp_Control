@@ -1,8 +1,8 @@
 #include <msp430.h> 
 
 volatile int j = 0;
-volatile char packet[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-char tpacket[sizeof(packet)];
+volatile char pkt[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+char tpkt[sizeof(pkt)];
 
 volatile int action_select = 0;
 volatile int action_count = 0;
@@ -13,6 +13,8 @@ void initI2C_slave(){
     UCB0CTLW0 |= UCMODE_3 | UCSYNC;     // Put into I2C mode
     UCB0I2COA0 = 0x0068 | UCOAEN;       // Set slave address + enable
 
+    UCB0CTLW1 |= 0xC0;             // Set UCCLTO = 11 (~34ms clock low timeout)
+
     // Setup ports
     P1SEL1 &= ~BIT3;            // P1.3 SCL
     P1SEL0 |= BIT3;
@@ -22,7 +24,7 @@ void initI2C_slave(){
 
     UCB0CTLW0 &= ~UCSWRST;      // SW RESET OFF
 
-    UCB0IE |= UCTXIE0 | UCRXIE0 | UCSTPIE;          // Enable I2C B0 Tx/Rx/Stop IRQs
+    UCB0IE |= UCTXIE0 | UCRXIE0 | UCSTPIE | UCCLTOIE | UCBCNTIE | UCNACKIE;          // Enable I2C B0 Tx/Rx/Stop IRQs
 
     PM5CTL0 &= ~LOCKLPM5;       // Turn on I/O
     UCB0CTLW0 &= ~UCSWRST;      // SW RESET OFF
@@ -45,11 +47,11 @@ void init(){
     P1DIR |= (BIT4 | BIT5 | BIT6 | BIT7);       // Set P1.4 Output for DB4-DB7 (LCD)
     P1OUT &= ~(BIT4 | BIT5 | BIT6 | BIT7);      // Clear P1.4-7
 
-    P2DIR |= BIT7;      // Set P2.7 output for RS (LCD) - (RS = 0 instruction, RS = 1 data)
-    P2OUT &= ~BIT7;     // Clear P2.7
+    P2DIR |= (BIT7 | BIT6);      // Set P2.7 output for RS (LCD) - (RS = 0 instruction, RS = 1 data)
+    P2OUT &= ~(BIT7 | BIT6);     // Clear P2.7
 
-    P2DIR |= BIT6;      // Set P2.6 output for E (LCD), data starts on falling edge
-    P2OUT &= ~BIT6;     // Clear P2.6
+//    P2DIR |= BIT6;      // Set P2.6 output for E (LCD), data starts on falling edge
+//    P2OUT &= ~BIT6;     // Clear P2.6
 
     P1DIR |= BIT1;      // P1.1 LED output
     P1OUT &= ~BIT1;     // Clear P1.1
@@ -257,59 +259,55 @@ void LCDstartDisplay() {
     sendByte(0b01110011, 1);        // Display s
     sendByte(0b00111101, 1);        // Display =
 
-    shiftCursorForward(4);
+    shiftCurFwd(4);
 
     sendByte(0b01000001, 1);        // Display A
     sendByte(0b00111010, 1);        // Display :
 
-    shiftCursorForward(4);
+    shiftCurFwd(4);
 
     sendByte(0b11011111, 1);        // Display °
     sendByte(0b01000011, 1);        // Display C
     setCursorSecondRow();
-    shiftCursorForward(1);
+    shiftCurFwd(1);
     sendByte(0b00111101, 1);        // Display =
 
-    shiftCursorForward(3);
+    shiftCurFwd(3);
 
     sendByte(0b01110011, 1);        // Display s
 
-    shiftCursorForward(2);
+    shiftCurFwd(2);
 
     sendByte(0b01010000, 1);        // Display P
     sendByte(0b00111010, 1);        // Display :
 
-    shiftCursorForward(4);
+    shiftCurFwd(4);
 
     sendByte(0b11011111, 1);        // Display °
     sendByte(0b01000011, 1);        // Display C
 
 }
 
-renderPacket(int start, int stop) {
+renderPkt(char* bytes, int start, int stop) {
     int m;
     int charCount = 0;
-    UCB0IE &= ~(UCTXIE0 | UCRXIE0 | UCSTPIE);   // Disable
+//    UCB0IE &= ~(UCTXIE0 | UCRXIE0 | UCSTPIE);   // Disable
     for(m=start;m<=stop;m++){
-        if(m == 2 || m == 5) {
-            sendByte(getCharCode(0x12), 1);
-        }
-        int code = getCharCode(packet[m]);
+        int code = getCharCode(bytes[m]);
         sendByte(code, 1);                      // Display character
         charCount++;
-        delay1000();
     }
-    UCB0IE |= (UCTXIE0 | UCRXIE0 | UCSTPIE);    // Enable
+//    UCB0IE |= (UCTXIE0 | UCRXIE0 | UCSTPIE);    // Enable
 }
 
-void shiftCursorForward(int f){
+void shiftCurFwd(int f){
     int i;
     for(i = 0; i < f; i++) {
         sendByte(0b00010100, 0);
     }
 }
 
-void shiftCursorBackward(){
+void shiftCurBkwd(){
     sendByte(0b00010000, 0);
 }
 
@@ -322,7 +320,7 @@ int main(void)
     int charCount = 0;
     int i;
 
-    init();
+init();
     delay_ms(20);
     LCDsetup();
 
@@ -336,40 +334,49 @@ int main(void)
 
         if(action_select == 1){                 // Perform action based on received data from master (display temperature, reset screen, toggle LED)
 
-            for(i = 0;i<(sizeof(packet));i++){
-                tpacket[i] = packet[i];
+            for(i = 0;i<(sizeof(pkt));i++){
+                tpkt[i] = pkt[i];
             }
 
-//            if(action_count == 50){
-//                clear_display();
-//                LCDstartDisplay();
-//                action_count = 0;
-//            }
-
-            int code = getCharCode(tpacket[0]);
+            int code = getCharCode(tpkt[0]);
             if(code == -1){                      // Clear LCD and reset default display if '#' received
                 code = 0;
                 clear_display();
                 LCDstartDisplay();
                 charCount = 0;
             } else if(code != 0){
-//                if(code == 0b00101010) {        // Turn off LED if '*' received
 
-                P1OUT |= BIT1;              // Turn on LED if any other character pressed
+//                P1OUT |= BIT1;              // Turn on LED if any other character pressed
+//                char p = pkt[9];
+//                if((pkt[9] != 0x80) && (pkt[9] != 0x40) && (pkt[9] != 0x20) && (pkt[9] != 0x10) && (pkt[9] != 0x00)) {
+//                    P1SEL0 &=  ~(BIT2);
+//                    P1SEL0 &=  ~(BIT3);
+//                    UCB0CTLW0 |= UCSWRST;               // SW RESET enabled
+//                    UCB0CTLW0 &= ~UCSWRST;      // SW RESET OFF
+//                    P1SEL0 |=  (BIT3|BIT2); // Re-connect pins to I2C
+//                    UCB0IE &= ~(UCTXIE0 | UCRXIE0 | UCSTPIE);   // Disable
+//                    UCB0IE |= (UCTXIE0 | UCRXIE0 | UCSTPIE);    // Enable
+//                }
 
-                returnHome();
-                //sendByte(0b00000110, 0);                // Entry mode set
+                  // renderPkt(tpkt, 0, 10); testing
 
-                shiftCursorForward(4);
-                sendByte(getCharCode(tpacket[10]), 1);    // Display n value
-                shiftCursorForward(5);
-                renderPacket(0, 2);                     // Display ambient temperature
+                shiftCurFwd(4);
+                sendByte(getCharCode(tpkt[10]), 1);    // Display n value
+                shiftCurFwd(5);
+                renderPkt(tpkt, 0, 1);              // Display ambient temperature
+                sendByte(getCharCode(0x12), 1);     // .
+                sendByte(getCharCode(tpkt[2]), 1);  // tenths place
+
                 setCursorSecondRow();
-                sendByte(getCharCode(tpacket[9]), 1);    // Display M
-                shiftCursorForward(1);
-                renderPacket(6, 8);                     // Display time
-                shiftCursorForward(5);
-                renderPacket(3, 5);                    // Display plant temperature
+                sendByte(getCharCode(tpkt[9]), 1);    // Display M
+                shiftCurFwd(1);
+                renderPkt(tpkt, 6, 8);                     // Display time
+                shiftCurFwd(5);
+
+                renderPkt(tpkt, 3, 4);              // Display plant temperature
+                sendByte(getCharCode(0x12), 1);     // .
+                sendByte(getCharCode(tpkt[5]), 1);  // tenths place
+                returnHome();
 
                 action_select = 0;          // End action
 
@@ -385,21 +392,30 @@ int main(void)
 __interrupt void EUSCI_B0_TX_ISR(void){
 
     switch(UCB0IV){
+        case 0x06: // start condition
+
+            break;
+        case 0x08:  // stop condition
+            j = 0;
+            action_select = 1;       // Display temperature or perform action for #/*
+            break;
         case 0x16:                           // Receiving
-            if(j == sizeof(packet)){
-                   j = 0;
-                   action_select = 1;       // Display temperature or perform action for #/*
-                   action_count++;
-                }
-                packet[j] = UCB0RXBUF;      // Retrieve byte from buffer
-                j++;
+//            if(j == sizeof(pkt)-1){
+//               action_select = 1;       // Display temperature or perform action for #/*
+//            }
+            pkt[j] = UCB0RXBUF;      // Retrieve byte from buffer
+            j++;
 
             break;
         case 0x18:
             break;
+        case 0x1C: // clock low timeout
+//            UCB0CTLW0 |= UCTXNACK;           // Generate START condition
+            //initI2C_slave();
+            break;
     }
 
-    UCB0IFG &= ~UCTXIFG0;                   // Clear flag to allow I2C interrupt
+    //UCB0IFG &= ~UCTXIFG0;                   // Clear flag to allow I2C interrupt
 }
 
 #pragma vector=TIMER0_B0_VECTOR
