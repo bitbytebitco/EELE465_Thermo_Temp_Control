@@ -879,6 +879,7 @@ __interrupt void EUSCI_B0_TX_ISR(void){
                         if(mode_count == 300){
                             mode_count = 0;
                             plant_op_mode = 0x10;
+                            send_led_packet_flag = 1;
                         }
                     }
                 } else {
