@@ -548,6 +548,8 @@ void updateTempControls(){
         // match ambient
     } else if(plant_op_mode == 0x10){
         setOff();
+    } else {
+        setOff();
     }
 }
 
