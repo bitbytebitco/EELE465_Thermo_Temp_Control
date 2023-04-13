@@ -10,8 +10,10 @@ volatile int i, n, sampleCount;
 volatile int sampling_active = 0;
 volatile float avg;
 volatile float unrounded_avg = 0;
+volatile float lm92_avg = 0;
+volatile float lm92_temps[9];
 volatile float ADC[9];
-int temp_in[] = { 0x00, 0x00 };
+int lm92_packet[] = { 0x00, 0x00 };
 int mode, mode_b;
 
 
@@ -54,6 +56,8 @@ void initI2C_master(){
      UCB1CTLW0 |= UCMST;            // Set as MASTER
      UCB1CTLW0 |= UCTR;             // Put into Tx mode
 
+     UCB1CTLW1 |= 0xC0;             // Set UCCLTO = 11 (~34ms clock low timeout)
+
      UCB1CTLW1 |= UCASTP_2;         // Enable automatic stop bit
      UCB1TBCNT = sizeof(packet);    // Transfer byte count
 
@@ -81,6 +85,8 @@ void initRTC_master(){
      UCB0CTLW0 |= UCTR;             // Put into Tx mode
      UCB0I2CSA = 0x0068;            // DS3231 RTC Slave address = 0x68
 
+     UCB0CTLW1 |= 0xC0;             // Set UCCLTO = 11 (~34ms clock low timeout)
+
      UCB0CTLW1 |= UCASTP_2;         // Enable automatic stop bit
      UCB0TBCNT = sizeof(packet);    // Transfer byte count
 
@@ -93,8 +99,8 @@ void initRTC_master(){
 
      UCB0CTLW0 &= ~UCSWRST;      // SW RESET OFF
 
-     UCB0IE |= UCTXIE0;          // enable I2C B0 Tx IRQ
-     UCB0IE |= UCRXIE0;          // enable I2C B0 Rx IRQ
+     UCB0IE |= UCTXIE0 | UCRXIE0 | UCCLTOIE | UCBCNTIE | UCNACKIE;          // enable I2C B0 Tx, Rx, timeout IRQ
+
 
 }
 
@@ -209,7 +215,7 @@ void sampleSensor() {           // Shift stack of measured values right one, the
         ADC[1] = ADC[0];
     }
 
-    delay1000();                    // Wait for ADC ref
+    //delay1000();                    // Wait for ADC ref
     ADC_start();                    // Start sample from ADC
     //ADC_stop();                     // Stop sample from ADC
 
@@ -263,7 +269,7 @@ void loadPacket() {
     int digit, j;
 
    // Place each digit of LM92 temperature into last four places of packet
-   float num = lm92_celcius;
+   float num = lm92_avg;
    int t = ((int)num % 100)/10;
    int o = ((int)num % 10)/1;
    int th = ((int)(num * 10) % 10);
@@ -319,15 +325,31 @@ void loadPacket() {
 
 }
 
-void getAverage() {
+void getAverageLM92() {
+
+    float lavg = 0;
+
+    // Transmit temperature average if enough samples have been recorded for desired window size
+    if(sampleCount > n - 1  && n > 0) {
+
+        // Calculate moving average for window size n
+        for(i = 0; i < n; i++) {
+            lavg = lavg + lm92_temps[i];
+        }
+        lm92_avg = lavg / n;
+    }
+}
+
+void getAverageLM19() {
+    float shim = 4; // 5 deg celcius
 
     avg = 0;                             // Reset moving average
 
     //Convert DN (ADCMEM0) to voltage to temperature (Celsius)
     float voltage = (3.3*ADC_value)/1023;
-    float tcel = (1.8641 - voltage) / 0.01171;
-    ADC[0] = tcel;
-    //ADC[0] = -1481.96 + sqrt( 2.1962*pow(10, 6) + (1.8639 - (voltage)) / (3.88*pow(10, -6))  );
+//    float tcel = (1.8641 - voltage) / 0.01171;
+//    ADC[0] = tcel;
+    ADC[0] = -1481.96 + sqrt( 2.1962*pow(10, 6) + (1.8639 - (voltage)) / (3.88*pow(10, -6))  );
 
     // Transmit temperature average if enough samples have been recorded for desired window size
     if(sampleCount > n - 1  && n > 0) {
@@ -336,11 +358,8 @@ void getAverage() {
         for(i = 0; i < n; i++) {
             avg = avg + ADC[i];
         }
-        unrounded_avg = avg / n;
-        // loadPacket();
+        unrounded_avg = (avg / n) + shim;
     }
-
-
 }
 
 void queryRTC(){
@@ -422,21 +441,21 @@ void queryLM92(){
     UCB1CTLW0 &= ~UCTR;
     UCB1TBCNT = 2;
     UCB1CTLW0 |= UCTXSTT;           // Generate START condition
-    int timeout_cnt = 0;
-    int tcnt = 0;
-    int timeout = 0;
-    while((UCB1IFG & UCSTPIFG)==0){
-        // wait for STOP
-        timeout_cnt++;
-        if(timeout_cnt == 2500){
-            tcnt++;
-            if(tcnt == 20){
-                UCB1IFG |= UCSTPIFG;
-                return;
-            }
-
-        }
-    };
+//    int timeout_cnt = 0;
+//    int tcnt = 0;
+//    int timeout = 0;
+//    while((UCB1IFG & UCSTPIFG)==0){
+//        // wait for STOP
+//        timeout_cnt++;
+//        if(timeout_cnt == 2500){
+//            tcnt++;
+//            if(tcnt == 20){
+//                UCB1IFG |= UCSTPIFG;
+//                return;
+//            }
+//
+//        }
+//    };
     UCB1IFG &= ~UCSTPIFG;  // clear the stop flag
 }
 
@@ -447,7 +466,7 @@ void parseLM92Temp(){
 
     int n = 8;
     for(i = 3; i<=7; i++){
-        if((temp_in[1] & n)>0){
+        if((lm92_packet[1] & n)>0){
             lm92_temp |= i-2;
         }
         n = n << 1;
@@ -455,7 +474,7 @@ void parseLM92Temp(){
 
     j = 1;
     n = 32;
-    data = temp_in[0];
+    data = lm92_packet[0];
     for(i = 0; i<=7; i++){
        if((data & j)>0){
            lm92_temp |= n;
@@ -464,6 +483,18 @@ void parseLM92Temp(){
        j = j << 1;
     }
 
+}
+
+void loadLM92temp(){
+    int l;
+    lm92_celcius = lm92_temp * 0.0625;
+
+    // rotate lm92_temps
+    for(l = 0; l < 9; l++){
+        lm92_temps[l+1] = lm92_temps[l];
+    }
+    lm92_temps[0] = lm92_celcius;
+    getAverageLM92();
 }
 
 
@@ -515,12 +546,11 @@ int main(void) {
     PM5CTL0 &= ~LOCKLPM5;               // Turn on Digital I/O
 
 
-    UCB1IE |= UCTXIE0;                  // Enable I2C TX interrupt
-    UCB1IE |= UCRXIE0;                  // enable I2C B0 Rx IRQ
+    UCB1IE |= UCTXIE0 | UCRXIE0 | UCCLTOIE | UCBCNTIE | UCNACKIE;                  // Enable I2C TX interrupt
 
     __enable_interrupt();
 
-    int i,k;
+    int i,k,l;
     while(1){
 
         if(send_led_packet_flag == 1){
@@ -538,7 +568,10 @@ int main(void) {
             P6OUT ^= BIT2;
             queryLM92(); // query LM92 (plant temp)
             parseLM92Temp();
-            lm92_celcius = lm92_temp * 0.0625;
+
+            loadLM92temp();
+
+
             query_lm92_flag = 0;
         }
 
@@ -702,7 +735,7 @@ __interrupt void ISR_TB1_CCR0(void) {
         sampleCount++;
         sampling_active = 1;
         sampleSensor();                                     // Sample temperature sensor
-        getAverage();
+        getAverageLM19();
         P6OUT ^= BIT6;    // toggle P6.6
 
         sampling_active = 0;
@@ -750,11 +783,11 @@ __interrupt void EUSCI_B1_TX_ISR(void){                     // Fill TX buffer wi
     switch(UCB1IV){
         case 0x16:      // ID 16: RXIFG0
             if(mode == 2){
-                if (j == (sizeof(temp_in)-1)){
-                    temp_in[j] = UCB1RXBUF;
+                if (j == (sizeof(lm92_packet)-1)){
+                    lm92_packet[j] = UCB1RXBUF;
                     j = 0;
                 } else {
-                    temp_in[j] = UCB1RXBUF;
+                    lm92_packet[j] = UCB1RXBUF;
                     j++;
                 }
             }
@@ -775,13 +808,18 @@ __interrupt void EUSCI_B1_TX_ISR(void){                     // Fill TX buffer wi
                 }
             }
             break;
-        case UCCLTOIFG: // clock low timeout
-                UCB1CTLW0 = UCSWRST;                        // Put I2C into reset
+        case 0x04: // NACK
+            break;
+        case 0x1A: // byte count zero interrupt
+            //j = 0;
+            break;
+        case 0x1C: // clock low timeout
+            UCB0CTLW0 |= UCTXNACK;
+//            UCB0CTLW0 = UCSWRST;                        // Put I2C into reset
 //                UCB0IE &= ~(UCTXIE);                        // Disable TX interrupt
 //                UCB0IE |= UCRXIE;                           // Enable RX interrupt
-                UCB1CTLW0 &= ~UCSWRST;                      // Take I2C out of reset
-                break;
-
+//            UCB0CTLW0 &= ~UCSWRST;                      // Take I2C out of reset
+            break;
         default:
             break;
     }
