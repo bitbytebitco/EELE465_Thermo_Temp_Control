@@ -6,6 +6,8 @@
 int j = 0;
 int r = 0;
 
+int ambient_heating_cooling = 0;
+
 volatile int i, n, sampleCount;
 volatile int sampling_active = 0;
 volatile float avg;
@@ -385,6 +387,16 @@ void queryRTC(){
 void send_led_packet(){
     led_packet[0] = plant_op_mode;
 
+    if(plant_op_mode == 0x20){
+        if(ambient_heating_cooling == 1){
+            led_packet[0] = 0x17;
+        } else if(ambient_heating_cooling == 0) {
+            led_packet[0] = 0x11;
+        } else {
+            led_packet[0] = 0x10;
+        }
+    }
+
     UCB1I2CSA = 0x0058;                 // Set slave address
     mode = 4;
     UCB1CTLW0 |= UCTR;
@@ -556,20 +568,25 @@ void updateTempControls(){
 }
 
 void matchAmbient(){
-    int tolerance = 1; // 1 degree Celcius tolerance
+    int tolerance = 2; // 1 degree Celcius tolerance
 
     float plant_temp = lm92_avg; // Plant temp. (LM92)
-    float ambient_temp = avg; // Ambient temp. (LM19)
+    float ambient_temp = unrounded_avg; // Ambient temp. (LM19)
 
     if(plant_temp < (ambient_temp - tolerance)){
         // set to HEAT
         setHot();
+        ambient_heating_cooling  = 1;
     } else if(plant_temp > (ambient_temp + tolerance)){
         // set to COOL
         setCool();
+        ambient_heating_cooling = 0;
     } else {
+        ambient_heating_cooling = -1;
+//        send_led_packet_flag == 1;
         setOff();
     }
+    send_led_packet();
 }
 
 int main(void) {
