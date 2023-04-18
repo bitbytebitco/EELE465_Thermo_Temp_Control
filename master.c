@@ -285,6 +285,7 @@ void loadPacket() {
        packet[i] = getCharKey(digit);
    }
 
+    // LM19 - Ambient temperature
     // Round Celsius average
     avg = round(unrounded_avg*10)/10;
 
@@ -527,6 +528,7 @@ void sendLCDPacket(){
     }
 }
 
+
 void setHot(){
     P5OUT &= ~BIT2;  // unset cool
     P5OUT |= BIT1;  // set hot
@@ -545,9 +547,26 @@ void updateTempControls(){
     } else if(plant_op_mode == 0x40){
         setCool();
     } else if(plant_op_mode == 0x20){
-        // match ambient
+        matchAmbient();
     } else if(plant_op_mode == 0x10){
         setOff();
+    } else {
+        setOff();
+    }
+}
+
+void matchAmbient(){
+    int tolerance = 1; // 1 degree Celcius tolerance
+
+    float plant_temp = lm92_avg; // Plant temp. (LM92)
+    float ambient_temp = avg; // Ambient temp. (LM19)
+
+    if(plant_temp < (ambient_temp - tolerance)){
+        // set to HEAT
+        setHot();
+    } else if(plant_temp > (ambient_temp + tolerance)){
+        // set to COOL
+        setCool();
     } else {
         setOff();
     }
