@@ -8,7 +8,8 @@ int r = 0;
 
 int ambient_heating_cooling = 0;
 
-volatile int i, n, sampleCount;
+int n = 0; // defaulting averaging window size to 5
+volatile int i, sampleCount;
 volatile int sampling_active = 0;
 volatile float avg;
 volatile float unrounded_avg = 0;
@@ -112,11 +113,17 @@ void initTimerB0compare(){      // Setup TB0
     TB0CTL |= MC__UP;           // UP mode
 }
 
+/*
+ * initTimerB1compare
+ *
+ * Timer used to set pace for sensor sampling LM19, LM92, RTC
+ * and sending updates to LCD screen
+ */
 void initTimerB1compare() {
     TB1CTL |= TBCLR;            // Clear TB1
     TB1CTL |= TBSSEL__SMCLK;    // Select SMCLK
     TB1CTL |= MC__UP;           // UP mode
-    TB1CCR0 = 1049;           // Set CCR0 value (1 ms)
+    TB1CCR0 = 490;           // Set CCR0 value (1 ms)  - 1049
     TB1CCTL0 &= ~CCIFG;         // Clear TB1 flag
     TB1CCTL0 |= CCIE;           // Enable TB1 interrupt
 }
@@ -344,7 +351,7 @@ void getAverageLM92() {
 }
 
 void getAverageLM19() {
-    float shim = 4; // 5 deg celcius
+    float shim = 8.5; // deg celcius (for calibration) previously 3.5
 
     avg = 0;                             // Reset moving average
 
@@ -541,11 +548,11 @@ void sendLCDPacket(){
 }
 
 
-void setHot(){
+void setOutputHot(){
     P5OUT &= ~BIT2;  // unset cool
     P5OUT |= BIT1;  // set hot
 }
-void setCool(){
+void setOutputCool(){
     P5OUT |= BIT2;  // set cool
     P5OUT &= ~BIT1;  // unset hot
 }
@@ -555,9 +562,9 @@ void setOff(){
 }
 void updateTempControls(){
     if(plant_op_mode == 0x80){
-        setHot();
+        setOutputHot();
     } else if(plant_op_mode == 0x40){
-        setCool();
+        setOutputCool();
     } else if(plant_op_mode == 0x20){
         matchAmbient();
     } else if(plant_op_mode == 0x10){
@@ -568,22 +575,21 @@ void updateTempControls(){
 }
 
 void matchAmbient(){
-    int tolerance = 2; // 1 degree Celcius tolerance
+    int tolerance = 2; // tolerance (degrees Celcius)
 
     float plant_temp = lm92_avg; // Plant temp. (LM92)
     float ambient_temp = unrounded_avg; // Ambient temp. (LM19)
 
     if(plant_temp < (ambient_temp - tolerance)){
         // set to HEAT
-        setHot();
+        setOutputHot();
         ambient_heating_cooling  = 1;
     } else if(plant_temp > (ambient_temp + tolerance)){
         // set to COOL
-        setCool();
+        setOutputCool();
         ambient_heating_cooling = 0;
     } else {
         ambient_heating_cooling = -1;
-//        send_led_packet_flag == 1;
         setOff();
     }
     send_led_packet();
@@ -827,7 +833,7 @@ __interrupt void ISR_TB1_CCR0(void) {
 __interrupt void ISR_TB2_CCR0(void){
     ms_count++;
 
-    if(ms_count == 1090){
+    if(ms_count == 1090){ // 1090
         P6OUT ^= BIT5;
         UCB1CTLW0 |= UCTXSTT;           // Generate START condition
         ms_count = 0;
